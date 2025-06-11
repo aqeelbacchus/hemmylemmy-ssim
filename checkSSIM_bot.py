@@ -1,11 +1,15 @@
 import os
 import subprocess
 import asyncio
+import logging
 from telegram import Update, Message
 from telegram.ext import (
     ApplicationBuilder, CommandHandler,
     MessageHandler, filters, ContextTypes
 )
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 video_storage = {}
@@ -30,6 +34,8 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     filepath = os.path.join(user_dir, f"{video_file.file_unique_id}.mp4")
     await file.download_to_drive(custom_path=filepath)
 
+    logger.info(f"User {user_id} uploaded: {filepath}")
+
     video_storage.setdefault(user_id, []).append(filepath)
 
     if len(video_storage[user_id]) < 2:
@@ -37,6 +43,8 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         v1, v2 = video_storage[user_id][:2]
         await update.message.reply_text("🔍 Comparing videos now...")
+
+        logger.info(f"Comparing videos: {v1} vs {v2}")
 
         ssim_log = os.path.join(user_dir, "ssim_log.txt")
         cmd = [
@@ -49,12 +57,14 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         try:
             subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+            logger.info("FFmpeg SSIM comparison complete.")
             with open(ssim_log) as f:
                 score_line = next((line for line in reversed(f.readlines()) if "All:" in line), "SSIM score not found.")
             import re
             match = re.search(r'All:([\d.]+)', score_line)
             ssim_value = float(match.group(1)) if match else None
             if ssim_value is not None:
+                logger.info(f"SSIM score extracted: {ssim_value}")
                 rating = ""
                 if ssim_value >= 0.95:
                     rating = "🔁 Almost identical"
@@ -73,19 +83,21 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 os.remove(v1)
                 os.remove(v2)
                 os.remove(ssim_log)
+                logger.info("Temporary files cleaned up.")
             except Exception:
                 pass
         except Exception as e:
+            logger.error(f"SSIM comparison failed: {e}")
             await update.message.reply_text(f"❌ Error comparing videos: {e}")
 
         # Clean up
         video_storage[user_id] = []
 
 if __name__ == "__main__":
-    print("Launching bot...")
+    logger.info("Launching bot...")
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("status", status))
     app.add_handler(MessageHandler(filters.VIDEO | filters.Document.VIDEO, handle_video))
-    print("🤖 Bot is running...")
+    logger.info("🤖 Bot is running...")
     app.run_polling()
